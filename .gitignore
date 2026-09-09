@@ -65,23 +65,37 @@
 *.app
 ~
 
-# === 新增建议 ===
+# === CMake 生成文件 ===
 
-# CMake 生成的中间文件
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
+# CMake 中间文件
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
 
-# 构建目录（通配 build/ build-debug/ 等）
-build*/
+# 所有项目的构建目录
+# 例如：
+# build/
+# build-debug/
+# xxx/build/
+**/build
+**/build-*/
 
-# 忽略 Clangd 的数据库缓存（可选）
-.cache/
-.clangd/
-.clangd-cache/
-.clangd_index/
 
-# 忽略链接文件
-compile_commands.json
+# === Clangd / IDE 缓存 ===
+
+**/.cache/
+**/.clangd/
+**/.clangd-cache/
+**/.clangd_index/
+
+# 编译数据库
+**/compile_commands.json
+
+
+# === 临时文件 ===
+
+~
+*.swp
+*.swo
 
