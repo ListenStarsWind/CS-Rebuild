@@ -1,0 +1,17 @@
+BasedOnStyle: Google
+
+# 你可以按需微调以下选项，也可以保持纯谷歌风格
+
+IndentWidth: 4            # Google 默认是 2 空格缩进
+TabWidth: 4               # Tab 等效 2 空格
+UseTab: Never
+
+PointerAlignment: Left    # Google 风格统一使用 int* p; （星号靠左）
+
+ColumnLimit: 100          # Google 默认是 80，但现代显示器下 100 更舒服（你也可以改回 80）
+
+AllowShortFunctionsOnASingleLine: Empty   # 空函数允许单行，其他仍换行
+
+DerivePointerAlignment: false
+SortIncludes: true
+IncludeBlocks: Regroup
