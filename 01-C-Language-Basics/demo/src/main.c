@@ -1,8 +1,6 @@
 
 
-int main(int argc, char* argv[]){
-    (void)argc;
-    (void)argv;
+int main(void){
 
     return 0;    
 }
