@@ -16,6 +16,10 @@ cmake_minimum_required(VERSION 3.22)
 # ├── src/
 # │   └── *.c
 # │
+# ├── tests/
+# │   ├── CMakeLists.txt
+# │   └── test_*.c
+# │
 # └── build/
 #
 #
@@ -26,6 +30,18 @@ cmake_minimum_required(VERSION 3.22)
 # 标准构建：
 #
 #   cmake --build build
+#
+# 运行测试：
+#
+#   ctest --test-dir build --output-on-failure
+#
+# 关闭测试系统：
+#
+#   cmake -S . -B build -G Ninja -DBUILD_TESTING=OFF
+#
+# 重新启用测试系统：
+#
+#   cmake -S . -B build -G Ninja -DBUILD_TESTING=ON
 #
 # ==============================================================================
 
@@ -48,9 +64,19 @@ cmake_minimum_required(VERSION 3.22)
 
 
 if(DEFINED ENV{CC})
-    set(CMAKE_C_COMPILER "$ENV{CC}")
+
+    set(
+        CMAKE_C_COMPILER
+        "$ENV{CC}"
+    )
+
 else()
-    set(CMAKE_C_COMPILER clang-21)
+
+    set(
+        CMAKE_C_COMPILER
+        clang-21
+    )
+
 endif()
 
 
@@ -93,6 +119,7 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
 
 endif()
 
+
 if(CMAKE_C_COMPILER_VERSION VERSION_LESS 21)
 
     message(
@@ -111,11 +138,20 @@ endif()
 # ==============================================================================
 
 
-set(CMAKE_C_STANDARD 17)
+set(
+    CMAKE_C_STANDARD
+    17
+)
 
-set(CMAKE_C_STANDARD_REQUIRED ON)
+set(
+    CMAKE_C_STANDARD_REQUIRED
+    ON
+)
 
-set(CMAKE_C_EXTENSIONS OFF)
+set(
+    CMAKE_C_EXTENSIONS
+    OFF
+)
 
 
 
@@ -124,14 +160,55 @@ set(CMAKE_C_EXTENSIONS OFF)
 # ==============================================================================
 
 
-set(CMAKE_BUILD_TYPE Debug)
+set(
+    CMAKE_BUILD_TYPE
+    Debug
+)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(
+    CMAKE_EXPORT_COMPILE_COMMANDS
+    ON
+)
 
 
 
 # ==============================================================================
-# 6. 常用 C 库开关
+# 6. 测试系统
+# ==============================================================================
+#
+# 使用 CMake 自带的 CTest。
+#
+# include(CTest) 会提供标准开关：
+#
+#   BUILD_TESTING
+#
+# 默认：
+#
+#   BUILD_TESTING=ON
+#
+# 关闭：
+#
+#   cmake -S . -B build -G Ninja -DBUILD_TESTING=OFF
+#
+# 开启：
+#
+#   cmake -S . -B build -G Ninja -DBUILD_TESTING=ON
+#
+# 当 BUILD_TESTING=OFF 时：
+#
+# - 不加载 tests/
+# - 不创建测试目标
+# - 不注册任何 CTest 测试
+#
+# ==============================================================================
+
+
+include(CTest)
+
+
+
+# ==============================================================================
+# 7. 常用 C 库开关
 # ==============================================================================
 #
 # C 标准库之外的一些常用库：
@@ -160,7 +237,10 @@ option(
 
 
 
-set(PROJECT_LIBRARIES "")
+set(
+    PROJECT_LIBRARIES
+    ""
+)
 
 
 
@@ -203,11 +283,12 @@ endif()
 
 
 # ==============================================================================
-# 7. 编译警告
+# 8. 编译警告
 # ==============================================================================
 
 
-set(PROJECT_COMPILE_OPTIONS
+set(
+    PROJECT_COMPILE_OPTIONS
 
     -Wall
     -Wextra
@@ -218,13 +299,12 @@ set(PROJECT_COMPILE_OPTIONS
 
     # 不进行优化，方便调试
     -O0
-
 )
 
 
 
 # ==============================================================================
-# 8. 自动发现项目文件
+# 9. 自动发现项目文件
 # ==============================================================================
 #
 # src:
@@ -235,6 +315,13 @@ set(PROJECT_COMPILE_OPTIONS
 #
 # CONFIGURE_DEPENDS:
 #     文件变化时自动重新配置
+#
+# 注意：
+#
+# tests/ 不属于 PROJECT_SOURCES。
+#
+# 测试代码由 tests/CMakeLists.txt 单独管理，
+# 不会被自动加入主程序 main。
 #
 # ==============================================================================
 
@@ -273,7 +360,7 @@ endif()
 
 
 # ==============================================================================
-# 9. 创建 C 可执行目标函数
+# 10. 创建 C 可执行目标函数
 # ==============================================================================
 
 
@@ -344,7 +431,7 @@ endfunction()
 
 
 # ==============================================================================
-# 10. 创建目标
+# 11. 创建主程序目标
 # ==============================================================================
 
 
@@ -353,7 +440,62 @@ add_c_executable(main)
 
 
 # ==============================================================================
-# 11. 输出构建信息
+# 12. 加载测试子项目
+# ==============================================================================
+#
+# tests/ 目录采用独立构建配置。
+#
+# 只有满足以下条件时才加载：
+#
+#   1. BUILD_TESTING=ON
+#   2. tests/CMakeLists.txt 存在
+#
+# 因此：
+#
+# 空的 tests/ 目录不会影响正常构建。
+#
+# ==============================================================================
+
+
+set(
+    TESTS_CMAKELISTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt"
+)
+
+
+if(BUILD_TESTING)
+
+    if(EXISTS "${TESTS_CMAKELISTS}")
+
+        add_subdirectory(tests)
+
+        set(
+            PROJECT_TESTS_CONFIGURED
+            ON
+        )
+
+    else()
+
+        set(
+            PROJECT_TESTS_CONFIGURED
+            OFF
+        )
+
+    endif()
+
+else()
+
+    set(
+        PROJECT_TESTS_CONFIGURED
+        OFF
+    )
+
+endif()
+
+
+
+# ==============================================================================
+# 13. 输出构建信息
 # ==============================================================================
 
 
@@ -383,6 +525,12 @@ message(STATUS " 可执行目标        : main")
 
 message(STATUS "")
 
+message(STATUS " 测试系统          : ${BUILD_TESTING}")
+
+message(STATUS " 测试配置          : ${PROJECT_TESTS_CONFIGURED}")
+
+message(STATUS "")
+
 message(STATUS " C 源文件:")
 
 foreach(file IN LISTS PROJECT_SOURCES)
@@ -396,11 +544,19 @@ message(STATUS "")
 
 message(STATUS " C 头文件:")
 
-foreach(file IN LISTS PROJECT_HEADERS)
+if(PROJECT_HEADERS)
 
-    message(STATUS "   ${file}")
+    foreach(file IN LISTS PROJECT_HEADERS)
 
-endforeach()
+        message(STATUS "   ${file}")
+
+    endforeach()
+
+else()
+
+    message(STATUS "   无")
+
+endif()
 
 
 message(STATUS "")
@@ -410,6 +566,5 @@ message(STATUS " 数学库 libm       : ${USE_MATH_LIBRARY}")
 message(STATUS " pthread           : ${USE_THREADS}")
 
 message(STATUS "==================================================")
-
 
 message(STATUS "")
