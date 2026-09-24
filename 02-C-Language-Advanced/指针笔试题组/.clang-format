@@ -1,0 +1,4 @@
+BasedOnStyle: Google
+
+ReflowComments: false
+AlignTrailingComments: false
