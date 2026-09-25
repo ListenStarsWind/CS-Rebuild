@@ -1,4 +1,4 @@
-#include "/system_info.h"
+#include "system_info.h"
 
 int main(void){
     printSystemInfo();
