@@ -53,9 +53,25 @@ cmake_minimum_required(VERSION 3.22)
 #   cmake --build build
 #
 #
-# 运行主程序：
+# 运行主程序（默认 Debug）：
 #
-#   ./build/main
+#   ./build/main-debug
+#   ./build/main-debug-sanitize
+#
+# 以 LLDB 研究运行库、栈帧和退出流程时，使用不带 Sanitizer 的版本：
+#
+#   lldb ./build/main-debug
+#
+# 显式选择 Release（会使当前 build tree 切换配置并重新编译）：
+#
+#   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build
+#
+#   ./build/main-release
+#   ./build/main-release-sanitize
+#
+# 如需 Debug/Release 真正并行维护，应使用两个独立 build tree；
+# 当前项目的 build 符号链接及其实际存储位置由外部自行管理。
 #
 #
 # 运行测试：
@@ -73,14 +89,15 @@ cmake_minimum_required(VERSION 3.22)
 #   cmake -S . -B build -DBUILD_TESTING=ON
 #
 #
-# 关闭 Sanitizer：
+# 只构建普通主程序、关闭测试目标的 Sanitizer（保留兼容开关）：
 #
 #   cmake -S . -B build -DENABLE_SANITIZERS=OFF
 #
-#
-# 重新启用 Sanitizer：
+# 恢复双版本和测试目标的 Sanitizer：
 #
 #   cmake -S . -B build -DENABLE_SANITIZERS=ON
+#
+# 注意：关闭构建目标不会自动删除旧的可执行文件。
 #
 # ==============================================================================
 
@@ -90,11 +107,10 @@ cmake_minimum_required(VERSION 3.22)
 # 1. 工具链控制
 # ==============================================================================
 #
-# 优先使用环境变量：
+# 优先尊重显式 -DCMAKE_C_COMPILER=... 或既有 CMakeCache.txt；
+# 其次使用环境变量 CC，均未指定时默认 clang-21。
 #
 #   export CC=clang-21
-#
-# 如果没有指定，则默认使用 clang-21。
 #
 #
 # 注意：
@@ -108,19 +124,13 @@ cmake_minimum_required(VERSION 3.22)
 # ==============================================================================
 
 
-if(DEFINED ENV{CC})
+if(NOT DEFINED CMAKE_C_COMPILER)
 
-    set(
-        CMAKE_C_COMPILER
-        "$ENV{CC}"
-    )
-
-else()
-
-    set(
-        CMAKE_C_COMPILER
-        clang-21
-    )
+    if(DEFINED ENV{CC} AND NOT "$ENV{CC}" STREQUAL "")
+        set(CMAKE_C_COMPILER "$ENV{CC}")
+    else()
+        set(CMAKE_C_COMPILER clang-21)
+    endif()
 
 endif()
 
@@ -260,7 +270,8 @@ set(
 #
 #   -DCMAKE_BUILD_TYPE=Release
 #
-# 则尊重调用者的设置。
+# 则尊重调用者的设置。可执行文件名始终包含实际构建类型。
+# 不同构建类型建议使用独立 build tree；它们的目标文件和缓存互不混用。
 #
 #
 # Ninja 和 Unix Makefiles 都属于单配置生成器，
@@ -307,6 +318,9 @@ endif()
 # ------------------------------------------------------------------------------
 #
 # 为 clangd 等工具生成真实编译命令数据库。
+# 双版本编译相同的源文件，但只导出普通主程序的编译条目，
+# 避免 clangd 对同一 .c 文件遇到两套可选命令。
+# 测试目标的编译命令仍然可以正常导出。
 #
 # ==============================================================================
 
@@ -421,7 +435,7 @@ option(
 
 option(
     ENABLE_SANITIZERS
-    "启用 AddressSanitizer 和 UndefinedBehaviorSanitizer"
+    "额外构建 Sanitizer 主程序，并默认对测试目标启用 Sanitizer"
     ON
 )
 
@@ -496,6 +510,9 @@ endif()
 #   -O0
 #
 #
+# -fno-omit-frame-pointer：保留普通 Debug 的帧指针，
+# 方便 LLDB 追踪栈帧；Sanitizer 目标也会单独配置该选项。
+#
 # 调试参数只应用于 Debug。
 #
 # 如果以后显式切换为 Release，
@@ -513,93 +530,44 @@ set(
 
     "$<$<CONFIG:Debug>:-g3>"
     "$<$<CONFIG:Debug>:-O0>"
+    "$<$<CONFIG:Debug>:-fno-omit-frame-pointer>"
 )
 
 
 
 # ==============================================================================
-# 11. Sanitizer
+# 11. Sanitizer 参数
 # ==============================================================================
 #
-# 默认启用：
+# 普通 main 目标始终不带 Sanitizer，保证运行库和 ABI 实验不受插桩干扰。
 #
+# 当 ENABLE_SANITIZERS=ON（默认）时，额外生成 main_sanitize 目标：
 #
-# AddressSanitizer（ASan）
+#   -fsanitize=address,undefined
+#   -fno-omit-frame-pointer
 #
-# 检查：
+# Linux 下，LSan 通常由 ASan 运行时集成，无须增加 -fsanitize=leak。
+# 如需在 LLDB 下调试检测版，可用 ASAN_OPTIONS=detect_leaks=0；
+# 这只关闭运行时泄漏检测，不等于去掉 ASan/UBSan 插桩。
 #
-# - heap-buffer-overflow
-# - stack-buffer-overflow
-# - global-buffer-overflow
-# - use-after-free
-# - double-free
-# - invalid-free
-# - 其他非法内存访问
-#
-#
-# LeakSanitizer（LSan）
-#
-# 检查：
-#
-# - 动态内存泄漏
-#
-# Linux 下 LeakSanitizer 默认集成在 AddressSanitizer 中，
-# 因此不单独添加：
-#
-#   -fsanitize=leak
-#
-#
-# UndefinedBehaviorSanitizer（UBSan）
-#
-# 检查大量未定义行为，例如：
-#
-# - 有符号整数溢出
-# - 非法移位
-# - 对齐错误
-# - 部分非法指针操作
-# - 其他可动态检测的未定义行为
-#
-#
-# -fno-omit-frame-pointer：
-#
-# 保留栈帧信息，提高 Sanitizer 调用栈质量。
+# 同一源码分别编译两次，各自拥有独立的目标文件与链接产物。
 #
 # ==============================================================================
 
 
 set(
     PROJECT_SANITIZER_COMPILE_OPTIONS
-    ""
+
+    -fsanitize=address,undefined
+    -fno-omit-frame-pointer
 )
 
 
 set(
     PROJECT_SANITIZER_LINK_OPTIONS
-    ""
+
+    -fsanitize=address,undefined
 )
-
-
-
-if(ENABLE_SANITIZERS)
-
-    list(
-        APPEND
-        PROJECT_SANITIZER_COMPILE_OPTIONS
-
-        -fsanitize=address,undefined
-        -fno-omit-frame-pointer
-    )
-
-
-    list(
-        APPEND
-        PROJECT_SANITIZER_LINK_OPTIONS
-
-        -fsanitize=address,undefined
-    )
-
-endif()
-
 
 
 # ==============================================================================
@@ -668,166 +636,158 @@ endif()
 # 13. 配置 C 目标
 # ==============================================================================
 #
-# 对一个已经创建的 C target 应用统一工程配置：
+# configure_c_target(<target> [SANITIZED | NO_SANITIZERS])
 #
-# - include 路径
-# - 基础警告
-# - Debug 参数
-# - Sanitizer
-# - 项目依赖库
+# 默认行为：遵循 ENABLE_SANITIZERS，保持既有 tests/CMakeLists.txt
+# 中 configure_c_target(test_name) 的使用方式不变。
 #
+# 主程序明确使用 NO_SANITIZERS；检测版本明确使用 SANITIZED。
+# SANITIZED 与 NO_SANITIZERS 不能同时指定。
 #
-# 主程序和 tests/ 中创建的测试目标均可调用。
-#
-#
-# 注意：
-#
-# 这里必须使用 PROJECT_SOURCE_DIR，
-# 而不是 CMAKE_CURRENT_SOURCE_DIR。
-#
-# 因为如果此函数由：
-#
-#   tests/CMakeLists.txt
-#
-# 调用，
-#
-# CMAKE_CURRENT_SOURCE_DIR 会变成：
-#
-#   <project>/tests
-#
-# 从而错误地寻找：
-#
-#   <project>/tests/include
+# 注意：使用 PROJECT_SOURCE_DIR，以便 tests/ 子目录同样能定位 include/。
 #
 # ==============================================================================
 
 
 function(configure_c_target target_name)
 
+    cmake_parse_arguments(
+        CT
+        "SANITIZED;NO_SANITIZERS"
+        ""
+        ""
+        ${ARGN}
+    )
 
-    # --------------------------------------------------------------------------
-    # 头文件路径
-    # --------------------------------------------------------------------------
+    if(CT_UNPARSED_ARGUMENTS OR CT_KEYWORDS_MISSING_VALUES)
+        message(FATAL_ERROR "configure_c_target(${target_name}) 存在未知参数")
+    endif()
+
+    if(CT_SANITIZED AND CT_NO_SANITIZERS)
+        message(FATAL_ERROR "${target_name}: SANITIZED 和 NO_SANITIZERS 互斥")
+    endif()
+
+    set(target_use_sanitizers ${ENABLE_SANITIZERS})
+
+    if(CT_SANITIZED)
+        set(target_use_sanitizers ON)
+    elseif(CT_NO_SANITIZERS)
+        set(target_use_sanitizers OFF)
+    endif()
 
     target_include_directories(
-
         ${target_name}
-
         PRIVATE
-
         "${PROJECT_SOURCE_DIR}/include"
-
     )
-
-
-
-    # --------------------------------------------------------------------------
-    # 编译参数
-    # --------------------------------------------------------------------------
 
     target_compile_options(
-
         ${target_name}
-
         PRIVATE
-
         ${PROJECT_COMPILE_OPTIONS}
-        ${PROJECT_SANITIZER_COMPILE_OPTIONS}
-
     )
 
+    if(target_use_sanitizers)
+        target_compile_options(
+            ${target_name}
+            PRIVATE
+            ${PROJECT_SANITIZER_COMPILE_OPTIONS}
+        )
 
-
-    # --------------------------------------------------------------------------
-    # 链接参数
-    # --------------------------------------------------------------------------
-
-    target_link_options(
-
-        ${target_name}
-
-        PRIVATE
-
-        ${PROJECT_SANITIZER_LINK_OPTIONS}
-
-    )
-
-
-
-    # --------------------------------------------------------------------------
-    # 链接库
-    # --------------------------------------------------------------------------
+        target_link_options(
+            ${target_name}
+            PRIVATE
+            ${PROJECT_SANITIZER_LINK_OPTIONS}
+        )
+    endif()
 
     target_link_libraries(
-
         ${target_name}
-
         PRIVATE
-
         ${PROJECT_LIBRARIES}
-
     )
 
-
 endfunction()
-
 
 
 # ==============================================================================
 # 14. 创建 C 可执行目标
 # ==============================================================================
 #
-# 创建一个使用 src/ 中全部项目源码的可执行程序。
+# add_c_executable(<target> [SANITIZED | NO_SANITIZERS])
 #
-#
-# 当前主程序：
-#
-#   main
-#
-#
-# 测试程序通常不应该使用这个函数，
-# 因为测试目标可能只需要部分项目源码。
-#
-# tests/CMakeLists.txt 可以自行：
-#
-#   add_executable(...)
-#
-# 然后：
-#
-#   configure_c_target(...)
+# 自动包含 src/ 下全部 C 源文件、include/ 下全部头文件。
+# 所有可执行目标复用同一套编译标准、警告和项目依赖。
 #
 # ==============================================================================
 
 
 function(add_c_executable target_name)
 
-
     add_executable(
-
         ${target_name}
-
         ${PROJECT_SOURCES}
         ${PROJECT_HEADERS}
-
     )
 
-
-    configure_c_target(
-        ${target_name}
-    )
-
+    configure_c_target(${target_name} ${ARGN})
 
 endfunction()
-
 
 
 # ==============================================================================
 # 15. 创建主程序目标
 # ==============================================================================
+#
+# CMake 逻辑目标始终是 main（普通版）和 main_sanitize（检测版）。
+# 输出文件名则跟随实际构建类型：
+#
+#   Debug           -> main-debug / main-debug-sanitize
+#   Release         -> main-release / main-release-sanitize
+#   RelWithDebInfo  -> main-relwithdebinfo / main-relwithdebinfo-sanitize
+#   MinSizeRel      -> main-minsizerel / main-minsizerel-sanitize
+#
+# $<CONFIG> 使用 CMake 实际选择的配置；避免 Release 仍叫 debug。
+# EXPORT_COMPILE_COMMANDS 属性自 CMake 3.20 起支持按目标控制。
+#
+# ==============================================================================
 
 
-add_c_executable(main)
+set(PROJECT_MAIN_OUTPUT_NAME "main-$<LOWER_CASE:$<CONFIG>>")
+set(PROJECT_SANITIZE_OUTPUT_NAME "main-$<LOWER_CASE:$<CONFIG>>-sanitize")
 
+# message(STATUS) 不求值生成器表达式，另外构造用于配置日志的名称。
+if(CMAKE_CONFIGURATION_TYPES)
+    set(PROJECT_MAIN_DISPLAY_NAME "main-<config>")
+    set(PROJECT_SANITIZE_DISPLAY_NAME "main-<config>-sanitize")
+else()
+    string(TOLOWER "${CMAKE_BUILD_TYPE}" PROJECT_BUILD_TYPE_LOWER)
+    set(PROJECT_MAIN_DISPLAY_NAME "main-${PROJECT_BUILD_TYPE_LOWER}")
+    set(PROJECT_SANITIZE_DISPLAY_NAME "main-${PROJECT_BUILD_TYPE_LOWER}-sanitize")
+endif()
+
+
+add_c_executable(main NO_SANITIZERS)
+
+set_target_properties(
+    main
+    PROPERTIES
+    OUTPUT_NAME "${PROJECT_MAIN_OUTPUT_NAME}"
+)
+
+
+if(ENABLE_SANITIZERS)
+
+    add_c_executable(main_sanitize SANITIZED)
+
+    set_target_properties(
+        main_sanitize
+        PROPERTIES
+        OUTPUT_NAME "${PROJECT_SANITIZE_OUTPUT_NAME}"
+        EXPORT_COMPILE_COMMANDS OFF
+    )
+
+endif()
 
 
 # ==============================================================================
@@ -852,13 +812,11 @@ add_c_executable(main)
 #
 #   configure_c_target(test_name)
 #
-# 从而获得与主程序一致的：
+# 从而获得与主程序一致的基础配置（include、警告、Debug 参数和依赖）。
 #
-# - include
-# - 编译警告
-# - Debug 参数
-# - Sanitizer
-# - 项目依赖库
+# 测试目标默认遵循 ENABLE_SANITIZERS：ON 时启用 ASan/UBSan。
+# tests/CMakeLists.txt 可以继续使用已有的 configure_c_target(test_name)，
+# 不必随着双版本主程序的引入而修改。
 #
 # ==============================================================================
 
@@ -941,28 +899,24 @@ message(STATUS " compile_commands  : ${CMAKE_EXPORT_COMPILE_COMMANDS}")
 
 message(STATUS "")
 
-message(STATUS " 可执行目标        : main")
-
+message(STATUS " CMake 主程序目标    : main")
+message(STATUS " 主程序输出          : ${PROJECT_MAIN_DISPLAY_NAME}")
+message(STATUS " 主程序 Sanitizer    : OFF")
 message(STATUS "")
-
-message(STATUS " Sanitizer         : ${ENABLE_SANITIZERS}")
-
+message(STATUS " 额外检测目标        : ${ENABLE_SANITIZERS}")
 
 if(ENABLE_SANITIZERS)
 
-    message(STATUS "   AddressSanitizer : ON")
-
-    message(STATUS "   LeakSanitizer    : ON")
-
-    message(STATUS "   UBSan            : ON")
+    message(STATUS " 检测程序 CMake 目标 : main_sanitize")
+    message(STATUS " 检测程序输出        : ${PROJECT_SANITIZE_DISPLAY_NAME}")
+    message(STATUS " 检测程序 ASan/UBSan : ON")
+    message(STATUS " 测试目标 ASan/UBSan : ON（默认）")
+    message(STATUS " LSan               : ASan 集成，运行时可单独关闭")
 
 else()
 
-    message(STATUS "   AddressSanitizer : OFF")
-
-    message(STATUS "   LeakSanitizer    : OFF")
-
-    message(STATUS "   UBSan            : OFF")
+    message(STATUS " 检测程序            : 不构建")
+    message(STATUS " 测试目标 ASan/UBSan : OFF（默认）")
 
 endif()
 
