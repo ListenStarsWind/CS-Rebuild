@@ -440,6 +440,22 @@ option(
 )
 
 
+# Boost.Test 为可选的 C++ 测试依赖；不影响普通 C 项目及 LLDB 主程序。
+# 从 demo 复制的新项目不需要 Boost 时保持 OFF。
+option(
+    ENABLE_BOOST_TESTS
+    "启用 Boost.Test 测试依赖（需要 Clang C++ 与 Boost 1.89）"
+    OFF
+)
+
+set(
+    PROJECT_BOOST_PREFIX
+    "/opt/libcxx-pkgs"
+    CACHE PATH
+    "自定义 Boost 安装前缀"
+)
+
+
 
 # ==============================================================================
 # 9. 项目依赖库
@@ -830,6 +846,31 @@ set(
 
 if(BUILD_TESTING)
 
+    # 只在实际存在 tests/ 且显式启用 Boost.Test 时初始化 C++。
+    # 不修改 project(LANGUAGES C)，普通 main 仍按纯 C 构建。
+    if(ENABLE_BOOST_TESTS AND EXISTS "${TESTS_CMAKELISTS}")
+
+        # 首次配置时才选择默认 C++ 编译器，尊重显式设置和 CXX 环境变量。
+        if(NOT DEFINED CMAKE_CXX_COMPILER
+           AND (NOT DEFINED ENV{CXX} OR "$ENV{CXX}" STREQUAL ""))
+            set(CMAKE_CXX_COMPILER clang++-21)
+        endif()
+
+        enable_language(CXX)
+
+        if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+           OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 21)
+            message(FATAL_ERROR "Boost.Test 测试要求 Clang C++ 21 或更高版本")
+        endif()
+
+        find_package(
+            Boost 1.89 CONFIG REQUIRED
+            COMPONENTS unit_test_framework
+            HINTS "${PROJECT_BOOST_PREFIX}"
+        )
+
+    endif()
+
     if(EXISTS "${TESTS_CMAKELISTS}")
 
         add_subdirectory(tests)
@@ -968,3 +1009,24 @@ message(STATUS " pthread           : ${USE_THREADS}")
 message(STATUS "==================================================")
 
 message(STATUS "")
+
+# ------------------------------------------------------------------------------
+# Boost.Test 状态
+# ------------------------------------------------------------------------------
+
+message(STATUS "")
+
+if(BUILD_TESTING AND ENABLE_BOOST_TESTS)
+
+    message(STATUS " Boost.Test         : ON")
+    message(STATUS " Boost 版本         : ${Boost_VERSION}")
+    message(STATUS " Boost 安装前缀     : ${PROJECT_BOOST_PREFIX}")
+    message(STATUS " C++ 编译器         : ${CMAKE_CXX_COMPILER}")
+    message(STATUS " C++ 编译器版本     : ${CMAKE_CXX_COMPILER_VERSION}")
+    message(STATUS " C++ 标准库         : libc++（由测试目标配置）")
+
+else()
+
+    message(STATUS " Boost.Test         : OFF")
+
+endif()

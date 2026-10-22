@@ -165,3 +165,45 @@ endfunction()
 #   )
 #
 # ==============================================================================
+add_c_test(
+    test_seqlist
+    test_seqlist.c
+)
+
+# ============================================================================
+# Boost.Test（可选）
+# 仅在顶层 ENABLE_BOOST_TESTS=ON 时创建，不影响原有 add_c_test()。
+# ============================================================================
+
+if(ENABLE_BOOST_TESTS)
+
+    add_executable(test_seqlist_boost
+        test_seqlist.cpp
+        ${PROJECT_TEST_SOURCES}
+        ${PROJECT_HEADERS}
+    )
+
+    # 统一继承根目录约定：Debug 参数、依赖与 Sanitizer 开关。
+    configure_c_target(test_seqlist_boost)
+
+    # 只让 C++ 测试目标使用 libc++；SeqList.c 仍按照 C17 编译。
+    target_compile_options(test_seqlist_boost PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>
+    )
+    target_link_options(test_seqlist_boost PRIVATE -stdlib=libc++)
+
+    target_link_libraries(test_seqlist_boost PRIVATE
+        Boost::unit_test_framework
+    )
+    target_compile_definitions(test_seqlist_boost PRIVATE BOOST_TEST_DYN_LINK)
+
+    # 通过 Boost 目标的导入信息提供运行时路径，不设置全局 LD_LIBRARY_PATH。
+    # ASan 的巨额分配行为由测试自身控制，避免环境变量影响普通目标。
+    add_test(NAME test_seqlist_boost COMMAND test_seqlist_boost)
+    if(ENABLE_SANITIZERS)
+        set_tests_properties(test_seqlist_boost PROPERTIES
+            ENVIRONMENT "ASAN_OPTIONS=allocator_may_return_null=1"
+        )
+    endif()
+
+endif()
