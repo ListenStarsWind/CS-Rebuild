@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 
 # ==============================================================================
-# C 语言复习工程
+# C / C++ 语言复习工程（兼容纯 C 项目）
 # ==============================================================================
 #
 # 推荐结构：
@@ -11,10 +11,10 @@ cmake_minimum_required(VERSION 3.22)
 # ├── CMakeLists.txt
 # │
 # ├── include/
-# │   └── *.h
+# │   └── *.h / *.hpp
 # │
 # ├── src/
-# │   └── *.c
+# │   └── *.c / *.cpp / *.cc / *.cxx
 # │
 # ├── tests/
 # │   ├── CMakeLists.txt
@@ -71,7 +71,7 @@ cmake_minimum_required(VERSION 3.22)
 #   ./build/main-release-sanitize
 #
 # 如需 Debug/Release 真正并行维护，应使用两个独立 build tree；
-# 当前项目的 build 符号链接及其实际存储位置由外部自行管理。
+# build 可以是普通目录或外部管理的符号链接，模板不依赖具体存储位置。
 #
 #
 # 运行测试：
@@ -89,7 +89,7 @@ cmake_minimum_required(VERSION 3.22)
 #   cmake -S . -B build -DBUILD_TESTING=ON
 #
 #
-# 只构建普通主程序、关闭测试目标的 Sanitizer（保留兼容开关）：
+# 关闭额外的 Sanitizer 主程序及测试目标 Sanitizer：
 #
 #   cmake -S . -B build -DENABLE_SANITIZERS=OFF
 #
@@ -250,6 +250,11 @@ set(
     OFF
 )
 
+# 只有项目确实启用 C++ 时才使用以下标准设置。
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 
 
 # ==============================================================================
@@ -319,7 +324,7 @@ endif()
 #
 # 为 clangd 等工具生成真实编译命令数据库。
 # 双版本编译相同的源文件，但只导出普通主程序的编译条目，
-# 避免 clangd 对同一 .c 文件遇到两套可选命令。
+# 避免 clangd 对同一源文件遇到两套可选命令。
 # 测试目标的编译命令仍然可以正常导出。
 #
 # ==============================================================================
@@ -442,6 +447,13 @@ option(
 
 # Boost.Test 为可选的 C++ 测试依赖；不影响普通 C 项目及 LLDB 主程序。
 # 从 demo 复制的新项目不需要 Boost 时保持 OFF。
+# Boost.Assert 仅用于 C++ 编译单元，头文件形式使用，无须链接库。
+option(
+    ENABLE_BOOST_ASSERT
+    "为 C++ 目标提供 Boost.Assert 头文件"
+    OFF
+)
+
 option(
     ENABLE_BOOST_TESTS
     "启用 Boost.Test 测试依赖（需要 Clang C++ 与 Boost 1.89）"
@@ -592,12 +604,12 @@ set(
 #
 # src：
 #
-#     自动发现全部 .c 文件。
+#     自动发现全部 .c / .cc / .cpp / .cxx 文件。
 #
 #
 # include：
 #
-#     自动发现全部 .h 文件。
+#     自动发现全部 .h / .hh / .hpp / .hxx 文件。
 #
 #
 # CONFIGURE_DEPENDS：
@@ -622,6 +634,9 @@ file(
     CONFIGURE_DEPENDS
 
     "${PROJECT_SOURCE_DIR}/src/*.c"
+    "${PROJECT_SOURCE_DIR}/src/*.cc"
+    "${PROJECT_SOURCE_DIR}/src/*.cpp"
+    "${PROJECT_SOURCE_DIR}/src/*.cxx"
 )
 
 
@@ -633,6 +648,9 @@ file(
     CONFIGURE_DEPENDS
 
     "${PROJECT_SOURCE_DIR}/include/*.h"
+    "${PROJECT_SOURCE_DIR}/include/*.hh"
+    "${PROJECT_SOURCE_DIR}/include/*.hpp"
+    "${PROJECT_SOURCE_DIR}/include/*.hxx"
 )
 
 
@@ -641,7 +659,7 @@ if(NOT PROJECT_SOURCES)
 
     message(
         FATAL_ERROR
-        "src目录中没有找到任何 .c 文件"
+        "src目录中没有找到任何 C/C++ 源文件"
     )
 
 endif()
@@ -649,7 +667,57 @@ endif()
 
 
 # ==============================================================================
-# 13. 配置 C 目标
+# 12.1 按需初始化 C++ 与 Boost.Assert
+# ==============================================================================
+# 普通 .c 项目不启用 C++；只有 src/ 出现 C++ 源文件，或测试明确要求
+# Boost.Test 时，才初始化 C++ 工具链。
+# C 与 C++ 源文件各自按自己的语言标准编译，不进行语法混编。
+# ==============================================================================
+
+set(PROJECT_HAS_CXX_SOURCES OFF)
+foreach(source_file IN LISTS PROJECT_SOURCES)
+    if(source_file MATCHES "\\.(cc|cpp|cxx)$")
+        set(PROJECT_HAS_CXX_SOURCES ON)
+        break()
+    endif()
+endforeach()
+
+set(TESTS_CMAKELISTS "${PROJECT_SOURCE_DIR}/tests/CMakeLists.txt")
+set(PROJECT_NEED_BOOST_TEST OFF)
+if(BUILD_TESTING AND ENABLE_BOOST_TESTS AND EXISTS "${TESTS_CMAKELISTS}")
+    set(PROJECT_NEED_BOOST_TEST ON)
+endif()
+
+if(PROJECT_HAS_CXX_SOURCES OR PROJECT_NEED_BOOST_TEST)
+    if(NOT DEFINED CMAKE_CXX_COMPILER
+       AND (NOT DEFINED ENV{CXX} OR "$ENV{CXX}" STREQUAL ""))
+        set(CMAKE_CXX_COMPILER clang++-21)
+    endif()
+
+    enable_language(CXX)
+
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+       OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 21)
+        message(FATAL_ERROR "C++ 目标要求 Clang C++ 21 或更高版本")
+    endif()
+endif()
+
+if(ENABLE_BOOST_ASSERT)
+    if(NOT PROJECT_HAS_CXX_SOURCES)
+        message(FATAL_ERROR "ENABLE_BOOST_ASSERT=ON 需要 src/ 中存在 C++ 源文件")
+    endif()
+
+    find_path(PROJECT_BOOST_ASSERT_INCLUDE_DIR
+        NAMES boost/assert.hpp
+        HINTS "${PROJECT_BOOST_PREFIX}/include"
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
+endif()
+
+
+# ==============================================================================
+# 13. 配置 C/C++ 目标
 # ==============================================================================
 #
 # configure_c_target(<target> [SANITIZED | NO_SANITIZERS])
@@ -703,6 +771,14 @@ function(configure_c_target target_name)
         ${PROJECT_COMPILE_OPTIONS}
     )
 
+    if(ENABLE_BOOST_ASSERT AND PROJECT_HAS_CXX_SOURCES)
+        target_include_directories(
+            ${target_name}
+            PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:${PROJECT_BOOST_ASSERT_INCLUDE_DIR}>"
+        )
+    endif()
+
     if(target_use_sanitizers)
         target_compile_options(
             ${target_name}
@@ -727,12 +803,12 @@ endfunction()
 
 
 # ==============================================================================
-# 14. 创建 C 可执行目标
+# 14. 创建 C/C++ 可执行目标
 # ==============================================================================
 #
 # add_c_executable(<target> [SANITIZED | NO_SANITIZERS])
 #
-# 自动包含 src/ 下全部 C 源文件、include/ 下全部头文件。
+# 自动包含 src/ 下全部 C/C++ 源文件、include/ 下全部头文件。
 # 所有可执行目标复用同一套编译标准、警告和项目依赖。
 #
 # ==============================================================================
@@ -837,38 +913,14 @@ endif()
 # ==============================================================================
 
 
-set(
-    TESTS_CMAKELISTS
-    "${PROJECT_SOURCE_DIR}/tests/CMakeLists.txt"
-)
-
-
-
 if(BUILD_TESTING)
 
-    # 只在实际存在 tests/ 且显式启用 Boost.Test 时初始化 C++。
-    # 不修改 project(LANGUAGES C)，普通 main 仍按纯 C 构建。
-    if(ENABLE_BOOST_TESTS AND EXISTS "${TESTS_CMAKELISTS}")
-
-        # 首次配置时才选择默认 C++ 编译器，尊重显式设置和 CXX 环境变量。
-        if(NOT DEFINED CMAKE_CXX_COMPILER
-           AND (NOT DEFINED ENV{CXX} OR "$ENV{CXX}" STREQUAL ""))
-            set(CMAKE_CXX_COMPILER clang++-21)
-        endif()
-
-        enable_language(CXX)
-
-        if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
-           OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 21)
-            message(FATAL_ERROR "Boost.Test 测试要求 Clang C++ 21 或更高版本")
-        endif()
-
+    if(PROJECT_NEED_BOOST_TEST)
         find_package(
             Boost 1.89 CONFIG REQUIRED
             COMPONENTS unit_test_framework
             HINTS "${PROJECT_BOOST_PREFIX}"
         )
-
     endif()
 
     if(EXISTS "${TESTS_CMAKELISTS}")
@@ -927,6 +979,12 @@ message(STATUS "")
 message(STATUS " C 标准            : C${CMAKE_C_STANDARD}")
 
 message(STATUS " C 扩展            : ${CMAKE_C_EXTENSIONS}")
+message(STATUS " C++ 源码          : ${PROJECT_HAS_CXX_SOURCES}")
+if(CMAKE_CXX_COMPILER_LOADED)
+    message(STATUS " C++ 标准          : C++${CMAKE_CXX_STANDARD}")
+    message(STATUS " C++ 扩展          : ${CMAKE_CXX_EXTENSIONS}")
+    message(STATUS " C++ 编译器        : ${CMAKE_CXX_COMPILER}")
+endif()
 
 message(STATUS "")
 
@@ -970,7 +1028,7 @@ message(STATUS " 测试配置          : ${PROJECT_TESTS_CONFIGURED}")
 
 message(STATUS "")
 
-message(STATUS " C 源文件:")
+message(STATUS " C/C++ 源文件:")
 
 
 foreach(file IN LISTS PROJECT_SOURCES)
@@ -982,7 +1040,7 @@ endforeach()
 
 message(STATUS "")
 
-message(STATUS " C 头文件:")
+message(STATUS " C/C++ 头文件:")
 
 
 if(PROJECT_HEADERS)
@@ -1005,6 +1063,7 @@ message(STATUS "")
 message(STATUS " 数学库 libm       : ${USE_MATH_LIBRARY}")
 
 message(STATUS " pthread           : ${USE_THREADS}")
+message(STATUS " Boost.Assert      : ${ENABLE_BOOST_ASSERT}")
 
 message(STATUS "==================================================")
 
@@ -1016,7 +1075,7 @@ message(STATUS "")
 
 message(STATUS "")
 
-if(BUILD_TESTING AND ENABLE_BOOST_TESTS)
+if(PROJECT_NEED_BOOST_TEST)
 
     message(STATUS " Boost.Test         : ON")
     message(STATUS " Boost 版本         : ${Boost_VERSION}")
