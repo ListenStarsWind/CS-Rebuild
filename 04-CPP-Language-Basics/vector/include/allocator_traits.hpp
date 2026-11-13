@@ -10,11 +10,8 @@ namespace wind {
 
 // 配置器指针萃取
 template <class Alloc>
-struct allocator_pointer_traits;
-
-template <template <class, class...> class Alloc, class T, class... Args>
-struct allocator_pointer_traits<Alloc<T, Args...>> {
-    using type = T*;
+struct allocator_pointer_traits {
+    using type = typename Alloc::value_type*;
 };
 
 template <class Alloc, class = void>
@@ -146,7 +143,7 @@ struct allocator_swap_propagation_traits<Alloc,
 template <class Alloc, class = void>
 struct allocator_always_equal_traits {
     // 一个没有非静态成员量的空间配置器显然是恒等的
-    using type = std::is_empty<Alloc>;
+    using type = std::is_empty<Alloc>::type;
 };
 
 template <class Alloc>

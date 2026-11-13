@@ -59,7 +59,7 @@ class allocator {
         }
     }
 
-    size_type max_size() noexcept {
+    size_type max_size() const noexcept {
         return max_element_count;
     }
 
@@ -72,7 +72,7 @@ class allocator {
         std::destroy_at(p);
     }
 
-    allocator<T>& select_on_container_copy_construction() {
+    allocator<T> select_on_container_copy_construction() const noexcept{
         return *this;
     }
 
