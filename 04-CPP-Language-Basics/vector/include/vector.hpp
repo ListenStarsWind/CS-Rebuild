@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <list>
 #include <type_traits>
 
 #include "allocator.hpp"
@@ -16,6 +17,7 @@ class vector {
 
    private:
     using allocator_traits_type = wind::allocator_traits<allocator_type>;
+    using self_type = vector<value_type, allocator_type>;
 
     static_assert(std::is_same_v<value_type, typename allocator_traits_type::value_type>,
                   "wind::vector: allocator_traits value_type must match T");
@@ -36,9 +38,68 @@ class vector {
     pointer _endofstorage;  // 指向所分配存储空间的末尾
     allocator_type _alloc;  // 空间配置器;
 
+   private:
+    // 默认追加指定数目元素 _finish 会进行适应性调整
+    void append_default(size_type count) {
+        if (count == 0) return;
+
+        const size_type maxSize = allocator_traits_type::max_size(_alloc);
+
+        size_type oldSize = size();
+        if (count > maxSize - oldSize) throw std::length_error("wind::vector::append_default");
+
+        reserve(oldSize + count);
+
+        size_type idx = 0;
+
+        try {
+            for (; idx < count; ++idx) {
+                allocator_traits_type::construct(_alloc, _finish + idx);
+            }
+        } catch (...) {
+            while (idx > 0) {
+                --idx;
+                allocator_traits_type::destroy(_alloc, _finish + idx);
+            }
+            throw;
+        }
+
+        _finish += count;
+    }
+
+    // 析构并溢出末尾指定元素
+    void pop_back_n(size_type count) noexcept {
+        if (count == 0) return;
+
+        size_type oldSize = size();
+        if (count > oldSize) count = oldSize;
+        pointer curr = _finish - count;
+        while (curr != _finish) {
+            allocator_traits_type::destroy(_alloc, curr);
+            ++curr;
+        }
+        _finish -= count;
+    }
+
    public:
     vector()
         : _start(nullptr), _finish(nullptr), _endofstorage(nullptr), _alloc(allocator_type()) {};
+
+    vector(const self_type& v)
+        : _start(nullptr),
+          _finish(nullptr),
+          _endofstorage(nullptr),
+          _alloc(allocator_traits_type::select_on_container_copy_construction(v._alloc)) {
+        try {
+            insert(end(), v.begin(), v.end());
+        } catch (...) {
+            clear();
+            if (_start) {
+                allocator_traits_type::deallocate(_alloc, _start, capacity());
+            }
+            throw;
+        }
+    }
 
     size_type size() noexcept {
         return _finish - _start;
@@ -121,6 +182,53 @@ class vector {
         _finish = ptr + oldSize;
         _endofstorage = _start + newCapacity;
         return;
+    }
+
+    void resize(size_type n) {
+        size_type oldSize = size();
+
+        if (n < oldSize) {
+            pop_back_n(oldSize - n);
+        } else {
+            const size_type maxSize = allocator_traits_type::max_size(_alloc);
+            append_default(n - oldSize);
+        }
+    }
+
+    void resize(size_type n, const_reference val) {
+        const size_type oldSize = size();
+
+        if (n < oldSize) {
+            pop_back_n(oldSize - n);
+            return;
+        }
+
+        if (n == oldSize) return;
+
+        const size_type count = n - oldSize;
+
+        // 提前保存副本，避免扩容导致 val 引用失效
+        value_type fill_value = val;
+
+        // 默认构造新增对象，并更新 _finish
+        append_default(count);
+
+        try {
+            pointer curr = _finish - count;
+
+            while (curr != _finish) {
+                *curr = fill_value;
+                ++curr;
+            }
+        } catch (...) {
+            // 移除本次新增的所有对象
+            pop_back_n(count);
+            throw;
+        }
+    }
+
+    void clear() {
+        pop_back_n(size());
     }
 
     // 在指定位置填充若干对象
@@ -219,9 +327,9 @@ class vector {
             if (idx < overlap_count) {
                 for (difference_type i = idx + count; i < move_count; ++i) {
                     if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
-                        move_src[idx] = std::move(move_dst[idx]);
+                        move_src[i] = std::move(move_dst[i]);
                     } else {
-                        move_src[idx] = move_dst[idx];
+                        move_src[i] = move_dst[i];
                     }
                 }
             }
@@ -263,6 +371,53 @@ class vector {
         return insert_pos;
     }
 
+    iterator erase(const_iterator first, const_iterator last) {
+        if (first < _start || first > _finish)
+            throw std::out_of_range("wind::vector::erase(range)");
+
+        if (first > last || last > _finish) throw std::out_of_range("wind::vector::erase(range)");
+
+        if (first == last) return const_cast<iterator>(first);
+
+        pointer move_dst = const_cast<pointer>(first);
+        pointer move_src = const_cast<pointer>(last);
+        difference_type erase_count = last - first;
+        difference_type move_count = _finish - last;
+        pointer dest_pos = _finish - erase_count;
+
+        difference_type idx = 0;
+        try {
+            for (; idx < move_count; ++idx) {
+                if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
+                    move_dst[idx] = std::move(move_src[idx]);
+                } else {
+                    move_dst[idx] = move_src[idx];
+                }
+            }
+        } catch (...) {
+            for (difference_type i = idx - erase_count; i >= 0; --i) {
+                if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
+                    move_src[i] = std::move(move_dst[i]);
+                } else {
+                    move_src[i] = move_dst[i];
+                }
+            }
+            throw;
+        }
+
+        for (idx = 0; idx < erase_count; ++idx) {
+            allocator_traits_type::destroy(_alloc, dest_pos + idx);
+        }
+
+        _finish = dest_pos;
+        return move_dst;
+    }
+
+    // 插入初始化列表
+    iterator insert(const_iterator pos, std::initializer_list<value_type> ilist) {
+        return insert(pos, ilist.begin(), ilist.end());
+    }
+
     // 在特定位置拷贝式插入一个对象
     iterator insert(const_iterator pos, const_reference value) {
         return emplace(pos, value);
@@ -270,7 +425,7 @@ class vector {
 
     // 在特定位置移动式插入一个对象
     iterator insert(const_pointer pos, value_type&& value) {
-        return emplace(pos, value);
+        return emplace(pos, std::move(value));
     }
 
     // 在特定位置移动式插入一个对象
@@ -298,7 +453,7 @@ class vector {
         pointer move_src = insert_pos;
         pointer move_dst = insert_pos + 1;
         difference_type move_count = oldSize - insert_offset;
-        const bool has_overlap = move_count > 1;
+        const difference_type overlap_count = move_count > 1 ? move_count - 1 : 0;  // 重叠的个数
 
         difference_type idx = 0;
 
@@ -314,12 +469,12 @@ class vector {
                 }
             }
         } catch (...) {
-            if (has_overlap) {
-                for (++idx; idx < move_count; ++idx) {
+            if (idx < overlap_count) {
+                for (difference_type i = idx + 1; i < move_count; ++i) {
                     if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
-                        move_src[idx] = std::move(move_dst[idx]);
+                        move_src[i] = std::move(move_dst[i]);
                     } else {
-                        move_src[idx] = move_dst[idx];
+                        move_src[i] = move_dst[i];
                     }
                 }
             }
@@ -347,6 +502,111 @@ class vector {
         return insert_pos;
     }
 
+    template <std::input_iterator InputIterator>
+    iterator insert(const_iterator pos, InputIterator first, InputIterator last) {
+        static_assert(std::is_default_constructible_v<value_type> &&
+                          std::is_copy_constructible_v<value_type> &&
+                          std::is_copy_assignable_v<value_type>,
+                      "wind::vector::insert(range): value_type must support default construction, "
+                      "copy construction and copy assignment");
+
+        size_type oldSize = size();
+        difference_type insert_offset = pos - _start;
+        if (insert_offset < 0 || insert_offset > oldSize)
+            throw std::out_of_range("wind::vector::insert(range): invalid iterator position");
+
+        std::list<value_type, allocator_type> tmp(first, last);
+        size_type count = tmp.size();
+
+        if (count == 0) return const_cast<iterator>(pos);
+
+        const size_type maxSize = allocator_traits_type::max_size(_alloc);
+        if (count > maxSize - oldSize)
+            throw std::length_error("wind::vector::insert(range): requested size exceeds max_size");
+
+        reserve(oldSize + count);
+
+        pointer insert_pos = _start + insert_offset;
+        pointer move_src = insert_pos;
+        pointer move_dst = insert_pos + count;
+        difference_type move_count = oldSize - insert_offset;
+        const difference_type overlap_count = move_count > count ? move_count - count : 0;
+
+        difference_type idx = 0;
+
+        try {
+            for (; idx < count; ++idx) {
+                allocator_traits_type::construct(_alloc, _finish + idx);
+            }
+        } catch (...) {
+            for (--idx; idx >= 0; --idx) {
+                allocator_traits_type::destroy(_alloc, _finish + idx);
+            }
+            throw;
+        }
+
+        idx = move_count - 1;
+        try {
+            for (; idx >= 0; --idx) {
+                if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
+                    move_dst[idx] = std::move(move_src[idx]);
+                } else {
+                    move_dst[idx] = move_src[idx];
+                }
+            }
+        } catch (...) {
+            if (idx < overlap_count) {
+                for (difference_type i = idx + count; i < move_count; ++i) {
+                    if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
+                        move_src[i] = std::move(move_dst[i]);
+                    } else {
+                        move_src[i] = move_dst[i];
+                    }
+                }
+            }
+
+            for (idx = 0; idx < count; ++idx) {
+                allocator_traits_type::destroy(_alloc, _finish + idx);
+            }
+            throw;
+        }
+
+        try {
+            auto it = tmp.begin();
+            for (idx = 0; idx < count; ++idx) {
+                if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
+                    insert_pos[idx] = std::move(*it);
+                } else {
+                    insert_pos[idx] = *it;
+                }
+                ++it;
+            }
+        } catch (...) {
+            for (idx = 0; idx < move_count; ++idx) {
+                if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
+                    move_src[idx] = std::move(move_dst[idx]);
+                } else {
+                    move_src[idx] = move_dst[idx];
+                }
+            }
+
+            for (idx = 0; idx < count; ++idx) {
+                allocator_traits_type::destroy(_alloc, _finish + idx);
+            }
+            throw;
+        }
+
+        _finish += count;
+        return insert_pos;
+    }
+
+    iterator erase(const_iterator pos) {
+        if (pos < _start || pos >= _finish)
+            throw std::out_of_range("wind::vector::erase(pos): invalid iterator position");
+
+        return erase(pos, pos + 1);
+    }
+
     // 为了防止自引用的 emplace 命中上述函数模板
     // 专门特化两个重载函数, 复用以往的接口
     iterator emplace(const_iterator pos, reference value) {
@@ -355,6 +615,14 @@ class vector {
 
     iterator emplace(const_iterator pos, const_reference value) {
         return insert(pos, 1, value);
+    }
+
+    void push_back(const_reference val) {
+        insert(end(), val);
+    }
+
+    void push_back(value_type&& val) {
+        insert(end(), std::move(val));
     }
 
     const_pointer data() const noexcept {
