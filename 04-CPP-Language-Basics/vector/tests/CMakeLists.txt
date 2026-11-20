@@ -131,4 +131,7 @@ add_cpp_test(
     test_allocator_traits.cpp
 )
 
-
+add_cpp_test(
+    test_vector
+    test_vector.cpp
+)

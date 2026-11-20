@@ -81,6 +81,19 @@ class vector {
         _finish -= count;
     }
 
+    // 析构所有元素，释放当前持有的存储空间
+    void release_storage() noexcept {
+        clear();
+
+        if (_start) {
+            allocator_traits_type::deallocate(_alloc, _start, capacity());
+        }
+
+        _start = nullptr;
+        _finish = nullptr;
+        _endofstorage = nullptr;
+    }
+
    public:
     vector()
         : _start(nullptr), _finish(nullptr), _endofstorage(nullptr), _alloc(allocator_type()) {};
@@ -93,12 +106,114 @@ class vector {
         try {
             insert(end(), v.begin(), v.end());
         } catch (...) {
-            clear();
-            if (_start) {
-                allocator_traits_type::deallocate(_alloc, _start, capacity());
-            }
+            release_storage();
             throw;
         }
+    }
+
+    template <std::input_iterator It>
+    vector(It first, It last) : vector() {
+        try {
+            insert(end(), first, last);
+        } catch (...) {
+            release_storage();
+            throw;
+        }
+    }
+
+    // 基本安全保证
+    self_type& operator=(const self_type& other) {
+        if (this == &other) return *this;
+
+        const size_type newSize = other.size();
+
+        // 完成元素拷贝
+        auto copy_elements = [&] {
+            clear();
+
+            try {
+                append_default(newSize);
+
+                for (size_type i = 0; i < newSize; ++i) {
+                    _start[i] = other._start[i];
+                }
+            } catch (...) {
+                clear();
+                throw;
+            }
+        };
+
+        // 更新配置器
+        auto copy_allocator = [&] { _alloc = other._alloc; };
+
+        if constexpr (allocator_traits_type::propagate_on_container_copy_assignment::value) {
+            if constexpr (allocator_traits_type::is_always_equal::value) {
+                copy_elements();
+                copy_allocator();
+            } else {
+                if (_alloc == other._alloc) {
+                    copy_elements();
+                    copy_allocator();
+                } else {
+                    release_storage();
+                    copy_allocator();
+                    copy_elements();
+                }
+            }
+        } else {
+            copy_elements();
+        }
+
+        return *this;
+    }
+
+    self_type& operator=(self_type&& other) {
+        if (this == &other) return *this;
+
+        release_storage();
+
+        auto move_point = [&] {
+            _start = std::exchange(other._start, nullptr);
+            _finish = std::exchange(other._finish, nullptr);
+            _endofstorage = std::exchange(other._endofstorage, nullptr);
+        };
+
+        auto move_alloc = [&] { _alloc = std::move(other._alloc); };
+
+        auto move_elements = [&] {
+            const size_type newSize = other.size();
+            try {
+                append_default(newSize);
+
+                for (size_type i = 0; i < newSize; ++i) {
+                    _start[i] = std::move(other._start[i]);
+                }
+            } catch (...) {
+                clear();
+                throw;
+            }
+        };
+
+        if constexpr (allocator_traits_type::propagate_on_container_move_assignment::value) {
+            move_alloc();
+            move_point();
+        } else {
+            if constexpr (allocator_traits_type::is_always_equal::value) {
+                move_point();
+            } else {
+                if (_alloc == other._alloc) {
+                    move_point();
+                } else {
+                    move_elements();
+                }
+            }
+        }
+
+        return *this;
+    }
+
+    ~vector() {
+        release_storage();
     }
 
     size_type size() noexcept {
@@ -190,7 +305,6 @@ class vector {
         if (n < oldSize) {
             pop_back_n(oldSize - n);
         } else {
-            const size_type maxSize = allocator_traits_type::max_size(_alloc);
             append_default(n - oldSize);
         }
     }
@@ -242,7 +356,7 @@ class vector {
         // 检查位置是否处于合法区间
         size_type oldSize = size();
         difference_type insert_offset = pos - _start;
-        if (insert_offset < 0 || insert_offset > oldSize)
+        if (insert_offset < 0 || insert_offset > static_cast<difference_type>(oldSize))
             throw std::out_of_range("wind::vector::insert: invalid iterator position");
 
         // 如果数目为0, 直接退出
@@ -272,14 +386,14 @@ class vector {
         // 注意这里可以尾插, 存在 0 的可能 之后 -1 可为负数
         difference_type move_count = oldSize - insert_offset;  // 需要移动的元素个数
         const difference_type overlap_count =
-            move_count > count ? move_count - count : 0;  // 重叠的个数
+            move_count > static_cast<difference_type>(count) ? move_count - count : 0;  // 重叠的个数
 
         // 使用有符号, 防止下溢出
         difference_type idx = 0;
 
         // 确保理想填充的合法区间中都是有效对象
         try {
-            for (; idx < count; ++idx) {
+            for (; idx < static_cast<difference_type>(count); ++idx) {
                 // 不输入第三参数, 完美转发后命中无参构造
                 allocator_traits_type::construct(_alloc, _finish + idx);
             }
@@ -344,7 +458,7 @@ class vector {
         // 开始填充
         // 抛出异常同样回退
         try {
-            for (idx = 0; idx < count; ++idx) {
+            for (idx = 0; idx < static_cast<difference_type>(count); ++idx) {
                 // 强制要求支持拷贝赋值
                 insert_pos[idx] = fill_value;
             }
@@ -413,6 +527,25 @@ class vector {
         return move_dst;
     }
 
+    void swap(self_type& other) noexcept(
+        allocator_traits_type::propagate_on_container_swap::value ||
+        allocator_traits_type::is_always_equal::value) {
+        if constexpr (!allocator_traits_type::propagate_on_container_swap::value &&
+                      !allocator_traits_type::is_always_equal::value) {
+            if (_alloc != other._alloc) {
+                throw std::logic_error("UB: swapped vectors with unequal allocators!");
+            }
+        }
+
+        if constexpr (allocator_traits_type::propagate_on_container_swap::value) {
+            std::swap(_alloc, other._alloc);
+        }
+
+        std::swap(_start, other._start);
+        std::swap(_finish, other._finish);
+        std::swap(_endofstorage, other._endofstorage);
+    }
+
     // 插入初始化列表
     iterator insert(const_iterator pos, std::initializer_list<value_type> ilist) {
         return insert(pos, ilist.begin(), ilist.end());
@@ -439,7 +572,7 @@ class vector {
 
         size_type oldSize = size();
         difference_type insert_offset = pos - _start;
-        if (insert_offset < 0 || insert_offset > oldSize)
+        if (insert_offset < 0 || static_cast<size_type>(insert_offset) > oldSize)
             throw std::out_of_range(
                 "wind::vector::emplace(const_iterator, ...): invalid iterator position");
 
@@ -512,7 +645,7 @@ class vector {
 
         size_type oldSize = size();
         difference_type insert_offset = pos - _start;
-        if (insert_offset < 0 || insert_offset > oldSize)
+        if (insert_offset < 0 || insert_offset > static_cast<difference_type>(oldSize))
             throw std::out_of_range("wind::vector::insert(range): invalid iterator position");
 
         std::list<value_type, allocator_type> tmp(first, last);
@@ -530,12 +663,12 @@ class vector {
         pointer move_src = insert_pos;
         pointer move_dst = insert_pos + count;
         difference_type move_count = oldSize - insert_offset;
-        const difference_type overlap_count = move_count > count ? move_count - count : 0;
+        const difference_type overlap_count = move_count > static_cast<difference_type>(count) ? move_count - count : 0;
 
         difference_type idx = 0;
 
         try {
-            for (; idx < count; ++idx) {
+            for (; idx < static_cast<difference_type>(count); ++idx) {
                 allocator_traits_type::construct(_alloc, _finish + idx);
             }
         } catch (...) {
@@ -573,7 +706,7 @@ class vector {
 
         try {
             auto it = tmp.begin();
-            for (idx = 0; idx < count; ++idx) {
+            for (idx = 0; idx < static_cast<difference_type>(count); ++idx) {
                 if constexpr (std::is_nothrow_move_assignable_v<value_type>) {
                     insert_pos[idx] = std::move(*it);
                 } else {
@@ -641,11 +774,11 @@ class vector {
         return _start == _finish;
     }
 
-    iterator begin() const noexcept {
+    const_iterator begin() const noexcept {
         return _start;
     }
 
-    iterator end() const noexcept {
+    const_iterator end() const noexcept {
         return _finish;
     }
 };
